@@ -138,6 +138,7 @@ export default class CircuitPlaygroundBoard extends EventEmitter {
    * @return {Promise}
    */
   destroy() {
+    debugger;
     this.dynamicComponents_.forEach(component => {
       // For now, these are _always_ Leds.  Complain if they're not.
       if (component instanceof Led) {

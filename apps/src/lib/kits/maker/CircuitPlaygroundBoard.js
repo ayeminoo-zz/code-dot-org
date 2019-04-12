@@ -182,7 +182,7 @@ export default class CircuitPlaygroundBoard extends EventEmitter {
         }
         this.serialPort_ = null;
         resolve();
-      }, 50);
+      }, 1000);
     });
   }
 

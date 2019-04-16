@@ -205,10 +205,34 @@ export default class CircuitPlaygroundBoard extends EventEmitter {
   }
 
   reset() {
-    const {led, buzzer, colorLeds} = this.prewiredComponents_;
-    led.off();
-    colorLeds.forEach(led => led.off());
-    buzzer.off();
+    const components = this.prewiredComponents_;
+    if (components.colorLeds) {
+      // led.stop() will stop the led from pulsing or blinking,
+      // but leaves it on if it is on. led.off() calls led.stop()
+      // and also turns the light off.
+      components.colorLeds.forEach(led => led.off());
+    }
+    if (components.led) {
+      // led.stop() will stop the led from pulsing or blinking,
+      // but leaves it on if it is on. led.off() calls led.stop()
+      // and also turns the light off.
+      components.led.off();
+    }
+    if (components.buzzer) {
+      components.buzzer.off();
+    }
+    if (components.soundSensor) {
+      components.soundSensor.disable();
+    }
+    if (components.lightSensor) {
+      components.lightSensor.disable();
+    }
+    if (components.tempSensor) {
+      components.tempSensor.disable();
+    }
+    if (components.accelerometer) {
+      components.accelerometer.stop();
+    }
   }
 
   /**

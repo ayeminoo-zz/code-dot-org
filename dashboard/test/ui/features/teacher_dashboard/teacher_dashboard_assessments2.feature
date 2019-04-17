@@ -1,11 +1,8 @@
 @no_mobile
-@dashboard_db_access
-@pegasus_db_access
 Feature: Using the assessments tab in the teacher dashboard
 
   Scenario: Assessments tab survey submissions
     Given I create an authorized teacher-associated student named "Sally"
-    And I give user "Teacher_Sally" hidden script access
     And I submit the assessment on "http://studio.code.org/s/csp-post-survey/stage/1/puzzle/1/page/6"
     And I sign out
 
@@ -31,6 +28,7 @@ Feature: Using the assessments tab in the teacher dashboard
 
     # Assign a script with an unlocked survey
     When I sign in as "Teacher_Sally"
+    And I get hidden script access
     And I am on "http://studio.code.org/home"
     And I click selector ".ui-test-section-dropdown" once I see it
     And I click selector ".edit-section-details-link"

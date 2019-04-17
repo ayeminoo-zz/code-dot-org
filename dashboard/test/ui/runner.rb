@@ -31,7 +31,7 @@ require_relative './utils/selenium_constants'
 
 require 'active_support/core_ext/object/blank'
 
-ENV['BUILD'] = `git rev-parse --short HEAD`
+ENV['BUILD'] ||= `git rev-parse --short HEAD`
 
 GIT_BRANCH = GitUtils.current_branch
 COMMIT_HASH = RakeUtils.git_revision
@@ -217,6 +217,12 @@ def parse_options
       opts.on('--output-synopsis', 'Print a synopsis of failing scenarios') do
         options.output_synopsis = true
       end
+      opts.on("--parallel-scenarios", "Run scenarios in parallel. Note: Experimental, logs aren't aggregated correctly.") do
+        options.parallel_scenarios = true
+      end
+      opts.on("--breakpoint", "Send breakpoint to Sauce Labs for failing scenarios") do
+        options.breakpoint = true
+      end
       opts.on_tail("-h", "--help", "Show this message") do
         puts opts
         exit
@@ -319,7 +325,11 @@ end
 
 def run_tests(env, feature, arguments, log_prefix)
   start_time = Time.now
-  cmd = "cucumber #{feature} #{arguments}"
+  cmd = if $options.parallel_scenarios
+          "parallel_cucumber --group-by scenarios -- #{arguments} -- #{feature}"
+        else
+          "cucumber #{feature} #{arguments}"
+        end
   puts "#{log_prefix}#{cmd}"
   Open3.popen3(env, cmd) do |stdin, stdout, stderr, wait_thr|
     stdin.close
@@ -702,6 +712,7 @@ def run_feature(browser, feature, options)
   run_environment['MOBILE'] = browser['mobile'] ? "true" : "false"
   run_environment['TEST_RUN_NAME'] = test_run_string
   run_environment['IS_CIRCLE'] = options.is_circle ? "true" : "false"
+  run_environment['BREAKPOINT'] = '1' if options.breakpoint
 
   # disable some stuff to make require_rails_env run faster within cucumber.
   # These things won't be disabled in the dashboard instance we're testing against.

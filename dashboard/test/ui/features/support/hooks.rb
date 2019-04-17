@@ -4,7 +4,7 @@ end
 
 After('@as_student') do |scenario|
   check_window_for_js_errors('after @as_student')
-  steps 'When I sign out' if scenario.passed?
+  steps 'When I sign out' if scenario.passed? || slow_browser?
 end
 
 Before('@as_young_student') do
@@ -13,7 +13,7 @@ end
 
 After('@as_young_student') do |scenario|
   check_window_for_js_errors('after @as_young_student')
-  steps 'When I sign out' if scenario.passed?
+  steps 'When I sign out' if scenario.passed? || slow_browser?
 end
 
 Before('@as_taught_student') do
@@ -22,7 +22,7 @@ end
 
 After('@as_taught_student') do |scenario|
   check_window_for_js_errors('after @as_taught_student')
-  steps 'When I sign out' if scenario.passed?
+  steps 'When I sign out' if scenario.passed? || slow_browser?
 end
 
 Before('@as_authorized_taught_student') do
@@ -31,7 +31,7 @@ end
 
 After('@as_authorized_taught_student') do |scenario|
   check_window_for_js_errors('after @as_authorized_taught_student')
-  steps 'When I sign out' if scenario.passed?
+  steps 'When I sign out' if scenario.passed? || slow_browser?
 end
 
 Before('@as_teacher') do
@@ -40,7 +40,7 @@ end
 
 After('@as_teacher') do |scenario|
   check_window_for_js_errors('after @as_teacher')
-  steps 'When I sign out' if scenario.passed?
+  steps 'When I sign out' if scenario.passed? || slow_browser?
 end
 
 # Add After hook as the last one, which results in it being run before

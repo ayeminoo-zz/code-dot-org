@@ -11,18 +11,22 @@ $browser_configs = JSON.load(open("browsers.json"))
 
 MAX_CONNECT_RETRIES = 3
 
+def w3c?
+  ['Firefox', 'Safari'].include? ENV['BROWSER_CONFIG']
+end
+
+# Run all tests in a single session.
+def single_session?
+  slow_browser? || @single_session
+end
+
 def slow_browser?
   ['iPhone', 'iPad'].include? ENV['BROWSER_CONFIG']
 end
 
 def saucelabs_browser(test_run_name)
-  if CDO.saucelabs_username.blank?
-    raise "Please define CDO.saucelabs_username"
-  end
-
-  if CDO.saucelabs_authkey.blank?
-    raise "Please define CDO.saucelabs_authkey"
-  end
+  raise "Please define CDO.saucelabs_username" if CDO.saucelabs_username.blank?
+  raise "Please define CDO.saucelabs_authkey"  if CDO.saucelabs_authkey.blank?
 
   is_tunnel = ENV['CIRCLE_BUILD_NUM']
   url = "http://#{CDO.saucelabs_username}:#{CDO.saucelabs_authkey}@#{is_tunnel ? 'localhost:4445' : 'ondemand.saucelabs.com:80'}/wd/hub"
@@ -30,16 +34,37 @@ def saucelabs_browser(test_run_name)
   capabilities = Selenium::WebDriver::Remote::Capabilities.new
   browser_config = $browser_configs.detect {|b| b['name'] == ENV['BROWSER_CONFIG']}
 
+  if ENV['BROWSER_CONFIG'] == 'Firefox'
+    # Firefox >= 66 has an issue with its content blocker causing page loads to block indefinitely.
+    # Set content blocking to 'strict' as a workaround.
+    profile = Selenium::WebDriver::Firefox::Profile.new
+    profile['browser.contentblocking.category'] = 'strict'
+    capabilities[:firefox_profile] = profile
+  end
+
   browser_config.each do |key, value|
     capabilities[key] = value
   end
 
   capabilities[:javascript_enabled] = 'true'
-  capabilities[:tunnelIdentifier] = CDO.circle_run_identifier if CDO.circle_run_identifier
-  capabilities[:name] = test_run_name
-  capabilities[:tags] = [ENV['GIT_BRANCH']]
-  capabilities[:build] = CDO.circle_run_identifier || ENV['BUILD']
-  capabilities[:idleTimeout] = 600
+
+  sauce_capabilities = {
+    name: test_run_name,
+    tags: [ENV['GIT_BRANCH']],
+    build: CDO.circle_run_identifier || ENV['BUILD'],
+    idleTimeout: 300
+  }
+  sauce_capabilities[:tunnelIdentifier] = CDO.circle_run_identifier if CDO.circle_run_identifier
+
+  # Use w3c-compatible sauce:options capabilities format for compatible browsers.
+  # Ref: https://wiki.saucelabs.com/display/DOCS/Selenium+W3C+Capabilities+Support+-+Beta
+  if w3c?
+    sauce_capabilities['seleniumVersion'] = Selenium::WebDriver::VERSION
+    capabilities['sauce:options'] = sauce_capabilities
+    capabilities['platformName'] = capabilities['platform']
+  else
+    capabilities.merge!(sauce_capabilities)
+  end
 
   very_verbose "DEBUG: Capabilities: #{CGI.escapeHTML capabilities.inspect}"
 
@@ -60,6 +85,9 @@ def saucelabs_browser(test_run_name)
 
       # Time to wait for any page loading to complete (default 5 minutes).
       browser.manage.timeouts.page_load = 2.minutes
+
+      # Time to wait for any async script to timeout (default 30 seconds).
+      browser.manage.timeouts.script_timeout = 90.seconds
 
       # Time to wait for any command (default 1 minute).
       http_client.send(:http).read_timeout = 2.minutes
@@ -93,6 +121,7 @@ def saucelabs_browser(test_run_name)
 end
 
 def get_browser(test_run_name)
+  very_verbose("Creating a new browser session '#{test_run_name}'") if $browser
   if ENV['TEST_LOCAL'] == 'true'
     headless = ENV['TEST_LOCAL_HEADLESS'] == 'true'
     # Run a local headless browser instead of Saucelabs.
@@ -105,14 +134,16 @@ end
 $browser = nil
 
 Before do |scenario|
+  tags = scenario.source_tag_names
+  @single_session = true if tags.include?('@single_session')
+
   very_verbose "DEBUG: @browser == #{CGI.escapeHTML @browser.inspect}"
 
-  if slow_browser?
+  if single_session?
+    very_verbose('Single session, using existing browser') if $browser
     $browser ||= get_browser ENV['TEST_RUN_NAME']
-    very_verbose 'slow browser, using existing'
     @browser ||= $browser
   else
-    very_verbose 'fast browser, getting a new one'
     $browser = @browser = get_browser "#{ENV['TEST_RUN_NAME']}_#{scenario.name}"
   end
   @browser.manage.delete_all_cookies
@@ -129,12 +160,18 @@ def log_result(result)
     body: {"passed" => result}.to_json,
     headers: {'Content-Type' => 'application/json'}
   )
+rescue => e
+  puts "Error logging result: #{e}"
 end
 
 # Quit current browser session.
-def quit_browser
+def quit_browser(breakpoint = false)
   with_read_timeout(5.seconds) do
-    $browser&.quit
+    if ENV['BREAKPOINT'] && breakpoint
+      $browser&.execute_script('sauce: break')
+    else
+      $browser&.quit
+    end
   rescue => e
     puts "Error quitting browser session: #{e}"
   end
@@ -144,17 +181,15 @@ end
 $all_passed = true
 
 After do |scenario|
-  if slow_browser?
+  if single_session?
     $all_passed &&= scenario.passed?
     # clear session state
-    unless @browser.current_url.include?('studio')
-      steps 'Then I am on "http://studio.code.org/"'
+    with_read_timeout(10) do
+      steps 'Then I sign out'
     end
-    @browser.execute_script 'sessionStorage.clear()'
-    @browser.execute_script 'localStorage.clear()'
   else
     log_result scenario.passed?
-    quit_browser
+    quit_browser(scenario.failed?)
   end
 end
 
@@ -190,8 +225,8 @@ AfterConfiguration do |config|
 end
 
 at_exit do
-  log_result $all_passed if slow_browser?
-  quit_browser
+  log_result $all_passed if single_session?
+  quit_browser(!$all_passed)
 end
 
 def very_verbose(msg)

@@ -27,7 +27,10 @@ def wait_until(timeout = DEFAULT_WAIT_TIMEOUT)
   rescue Selenium::WebDriver::Error::UnknownError => e
     puts "Unknown error: #{e}"
     false
-  rescue  Selenium::WebDriver::Error::StaleElementReferenceError
+  rescue Selenium::WebDriver::Error::WebDriverError => e
+    raise unless e.message.include?('no such element')
+    false
+  rescue Selenium::WebDriver::Error::StaleElementReferenceError
     false
   end
 end
@@ -46,14 +49,30 @@ rescue Selenium::WebDriver::Error::UnknownError => e
   true
 rescue Selenium::WebDriver::Error::StaleElementReferenceError
   true
+rescue Selenium::WebDriver::Error::WebDriverError => e
+  return true if e.message.include?('stale element reference') ||
+    e.message.include?('no such element')
+  puts "Unknown error: #{e}"
+  true
 end
 
-def page_load(wait_until_unload)
-  if wait_until_unload
-    html = @browser.find_element(tag_name: 'html')
+def page_load(wait = true, wait_proc: nil, blank_tab: false)
+  if wait
+    root = @browser.find_element(css: ':root')
+    tabs = @browser.window_handles if wait == 'tab'
     yield
-    wait_until {element_stale?(html)}
-    navigate_to(@browser.current_url)
+    if tabs
+      new_tab = wait_until {(@browser.window_handles - tabs).first}
+      @browser.switch_to.window(new_tab)
+    end
+    url = nil
+    wait_until do
+      wait_proc&.call
+      element_stale?(root) &&
+        ((url = @browser.current_url) != 'about:blank' || blank_tab) &&
+        url != ''
+    end
+    navigate_to(url)
   else
     yield
   end
@@ -82,6 +101,9 @@ def navigate_to(url)
   Retryable.retryable(on: RSpec::Expectations::ExpectationNotMetError, sleep: 10, tries: 3) do
     with_read_timeout(DEFAULT_WAIT_TIMEOUT + 5.seconds) do
       @browser.navigate.to url
+      wait_until do
+        @browser.execute_script('return document.readyState;') == 'complete'
+      end
     end
     refute_bad_gateway_or_site_unreachable
   end
@@ -98,26 +120,21 @@ When /^I wait to see (?:an? )?"([.#])([^"]*)"$/ do |selector_symbol, name|
   wait_until {!@browser.find_elements(selection_criteria).empty?}
 end
 
-When /^I go to the newly opened tab$/ do
-  wait_short_until {@browser.window_handles.length > 1}
-
-  @browser.switch_to.window(@browser.window_handles.last)
-
-  # Wait for Safari to finish switching to the new tab. We can't wait_short
-  # because @browser.title takes 30 seconds to timeout.
-  wait_until {@browser.title rescue nil}
-end
-
-When /^I open a new tab$/ do
-  @browser.execute_script('window.open();')
+When /^I go to a new tab$/ do
+  page_load('tab', blank_tab: true) do
+    @browser.execute_script('window.open();')
+  end
 end
 
 When /^I close the current tab$/ do
   @browser.close
+  tabs = @browser.window_handles
+  @browser.switch_to.window(tabs.first) if tabs.any?
 end
 
-When /^I switch to tab index (\d+)$/ do |tab_index|
-  @browser.switch_to.window(@browser.window_handles[tab_index.to_i])
+When /^I switch tabs$/ do
+  tab = @browser.window_handle
+  @browser.switch_to.window(@browser.window_handles.detect {|handle| handle != tab})
 end
 
 When /^I switch to the first iframe$/ do
@@ -127,7 +144,7 @@ end
 
 # Can switch out of iframe content
 When /^I switch to the default content$/ do
-  @browser.switch_to.window $default_window
+  @browser.switch_to.default_content
 end
 
 When /^I close the instructions overlay if it exists$/ do
@@ -179,6 +196,7 @@ end
 
 Then /^I see "([.#])([^"]*)"$/ do |selector_symbol, name|
   selection_criteria = selector_symbol == '#' ? {id: name} : {class: name}
+  selection_criteria = {css: "#{selector_symbol}#{name}"} if name.include?('#')
   @browser.find_element(selection_criteria)
 end
 
@@ -284,11 +302,13 @@ When /^I rotate to portrait$/ do
   end
 end
 
-When /^I press "([^"]*)"( to load a new page)?$/ do |button, load|
+When /^I press "([^"]*)"(?: to load a new (page|tab))?$/ do |button, load|
   wait_short_until do
     @button = @browser.find_element(id: button)
   end
-  page_load(load) {@button.click}
+  page_load(load) do
+    @button.click
+  end
 end
 
 When /^I press the child number (.*) of class "([^"]*)"( to load a new page)?$/ do |number, selector, load|
@@ -306,7 +326,7 @@ When /^I press the child number (.*) of class "([^"]*)"( to load a new page)?$/ 
   end
 end
 
-When /^I press the first "([^"]*)" element( to load a new page)?$/ do |selector, load|
+When /^I press the first "([^"]*)" element(?: to load a new (page|tab))?$/ do |selector, load|
   wait_short_until do
     @element = @browser.find_element(:css, selector)
   end
@@ -336,9 +356,11 @@ When /^I press SVG selector "([^"]*)"$/ do |selector|
   @browser.execute_script("$(#{selector.dump}).simulate('drag', function(){});")
 end
 
-When /^I press the last button with text "([^"]*)"$/ do |name|
+When /^I press the last button with text "([^"]*)"( to load a new page)?$/ do |name, load|
   name_selector = "button:contains(#{name})"
-  @browser.execute_script("$('" + name_selector + "').simulate('drag', function(){});")
+  page_load(load) do
+    @browser.execute_script("$('" + name_selector + "').simulate('drag', function(){});")
+  end
 end
 
 When /^I (?:open|close) the small footer menu$/ do
@@ -373,11 +395,13 @@ When /^I press the settings cog menu item "([^"]*)"$/ do |item_text|
   }
 end
 
-When /^I select the "([^"]*)" small footer item$/ do |menu_item_text|
-  steps %{
-    Then I open the small footer menu
-    And I press menu item "#{menu_item_text}"
-  }
+When /^I select the "([^"]*)" small footer item( to load a new page)?$/ do |menu_item_text, load|
+  page_load(load) do
+    steps %{
+      Then I open the small footer menu
+      And I press menu item "#{menu_item_text}"
+    }
+  end
 end
 
 When /^I press the SVG text "([^"]*)"$/ do |name|
@@ -385,11 +409,24 @@ When /^I press the SVG text "([^"]*)"$/ do |name|
   @browser.execute_script("$('" + name_selector + "').simulate('drag', function(){});")
 end
 
-When /^I select the "([^"]*)" option in dropdown "([^"]*)"( to load a new page)?$/ do |option_text, element_id, load|
+And(/^I scroll to "([^"]*)"$/) do |selector|
+  @browser.find_element(:css, selector).location_once_scrolled_into_view
+end
+
+def select_dropdown(element, option_text, load)
+  element.location_once_scrolled_into_view
+  select = Selenium::WebDriver::Support::Select.new(element)
   page_load(load) do
-    select = Selenium::WebDriver::Support::Select.new(@browser.find_element(:id, element_id))
     select.select_by(:text, option_text)
   end
+end
+
+When /^I select the "([^"]*)" option in dropdown "([^"]*)"( to load a new page)?$/ do |option_text, element_id, load|
+  select_dropdown(@browser.find_element(:id, element_id), option_text, load)
+end
+
+When /^I select the "([^"]*)" option in dropdown named "([^"]*)"( to load a new page)?$/ do |option_text, element_name, load|
+  select_dropdown(@browser.find_element(:css, "select[name=#{element_name}]"), option_text, load)
 end
 
 When /^I open the topmost blockly category "([^"]*)"$/ do |name|
@@ -450,13 +487,17 @@ end
 
 # Prefer clicking with selenium over jquery, since selenium clicks will fail
 # if the target element is obscured by another element.
-When /^I click "([^"]*)"( to load a new page)?$/ do |selector, load|
-  page_load(load) do
-    @browser.find_element(:css, selector).click
-  end
+When /^I click "([^"]*)"( once it exists)?(?: to load a new (page|tab))?$/ do |selector, wait, load|
+  find = -> {@browser.find_element(:css, selector)}
+  element = wait ? wait_until(&find) : find.call
+  page_load(load) {element.click}
 end
 
-When /^I click selector "([^"]*)"( to load a new page)?$/ do |jquery_selector, load|
+When /^I select the end of "([^"]*)"$/ do |selector|
+  @browser.execute_script("document.querySelector(\"#{selector}\").setSelectionRange(9999, 9999);")
+end
+
+When /^I click selector "([^"]*)"(?: to load a new (page|tab))?$/ do |jquery_selector, load|
   # normal a href links can only be clicked this way
   page_load(load) do
     @browser.execute_script("$(\"#{jquery_selector}\")[0].click();")
@@ -469,11 +510,13 @@ When /^I click selector "([^"]*)" if it exists$/ do |jquery_selector|
   end
 end
 
-When /^I click selector "([^"]*)" once I see it$/ do |selector|
+When /^I click selector "([^"]*)" once I see it(?: to load a new (page|tab))?$/ do |selector, load|
   wait_until do
     @browser.execute_script("return $(\"#{selector}:visible\").length != 0;")
   end
-  @browser.execute_script("$(\"#{selector}\")[0].click();")
+  page_load(load) do
+    @browser.execute_script("$(\"#{selector}\")[0].click();")
+  end
 end
 
 When /^I click selector "([^"]*)" if I see it$/ do |selector|
@@ -771,6 +814,15 @@ Then /^element "([^"]*)" is (?:enabled|not disabled)$/ do |selector|
   expect(disabled?(selector)).to eq(false)
 end
 
+Then /^I wait (?:up to (\d+) second[s]? )?until "([^"]*)" is (not )?disabled$/ do |wait, selector, negation|
+  wait_until(wait || DEFAULT_WAIT_TIMEOUT) do
+    disabled?(selector) == negation.nil?
+  end
+rescue
+  # If 'up to x seconds' is specified continue without error after time has elapsed.
+  raise if wait.nil?
+end
+
 Then /^element "([^"]*)" is disabled$/ do |selector|
   expect(disabled?(selector)).to eq(true)
 end
@@ -915,30 +967,21 @@ And(/^I set the pagemode cookie to "([^"]*)"$/) do |cookie_value|
   @browser.manage.add_cookie params
 end
 
-Given(/^I sign in as "([^"]*)"$/) do |name|
-  steps %Q{
-    Given I am on "http://studio.code.org/reset_session"
-    Then I am on "http://studio.code.org/"
-    And I wait to see "#signin_button"
-    Then I click ".header_user"
-    And I wait to see "#signin"
-    And I fill in username and password for "#{name}"
-    And I click "#signin-button" to load a new page
-    And I wait to see ".header_user"
-  }
+Given(/^I sign in as "([^"]*)"( quick)?$/) do |name, quick|
+  navigate_to replace_hostname('http://studio.code.org/reset_session')
+  user = @users[name]
+  email = user[:email]
+  password = user[:password]
+  url = "/users/sign_in"
+  request(url: url, method: 'POST', json: true, body: {user: {login: email, password: password}})
+
+  redirect = 'http://studio.code.org/home'
+  navigate_to replace_hostname(redirect) unless quick
 end
 
 Given(/^I sign out and sign in as "([^"]*)"$/) do |name|
-  individual_steps %Q{
-    Given I am on "http://studio.code.org/reset_session"
-    And I wait for 5 seconds
-    Then I am on "http://studio.code.org/"
-    And I wait to see "#signin_button"
-    Then I click ".header_user"
-    And I wait to see "#signin"
-    And I fill in username and password for "#{name}"
-    And I click "#signin-button"
-    And I wait to see ".header_user"
+  steps %Q{
+    And I sign in as "#{name}"
   }
 end
 
@@ -959,57 +1002,25 @@ Given(/^I am a (student|teacher)$/) do |user_type|
   }
 end
 
-def enroll_in_plc_course(user_email)
-  require_rails_env
-  user = User.find_by_email_or_hashed_email(user_email)
-  course = Course.find_by(name: 'All The PLC Things')
-  enrollment = Plc::UserCourseEnrollment.create(user: user, plc_course: course.plc_course)
-  enrollment.plc_unit_assignments.update_all(status: Plc::EnrollmentUnitAssignment::IN_PROGRESS)
-end
-
 Given(/^I am enrolled in a plc course$/) do
-  enroll_in_plc_course(@users.first[1][:email])
-end
-
-def create_user(**args)
-  name = "Fake User"
-  email, password = generate_user(name)
-  attributes = {
-    name: name,
-    email: email,
-    password: password,
-    user_type: "teacher",
-    age: "21+"
-  }.merge!(args)
-  user = User.new(attributes)
-  user.save ? user : nil
-end
-
-def assign_script_as_student(user_email, script_name)
-  require_rails_env
-  script = Script.find_by_name(script_name)
-  section = Section.create(name: "New Section", user: create_user, script: script)
-  user = User.find_by_email_or_hashed_email(user_email)
-  section.students << user
+  request(url: '/api/test/enroll_in_plc_course', method: 'POST')
 end
 
 Given(/^I am assigned to script "([^"]*)"$/) do |script_name|
-  assign_script_as_student(@users.first[1][:email], script_name)
-end
-
-Then(/^I fake completion of the assessment$/) do
-  user = User.find_by_email_or_hashed_email(@users.first[1][:email])
-  unit_assignment = Plc::EnrollmentUnitAssignment.find_by(user: user)
-  unit_assignment.enroll_user_in_unit_with_learning_modules(
-    [
-      unit_assignment.plc_course_unit.plc_learning_modules.find_by(module_type: Plc::LearningModule::CONTENT_MODULE),
-      unit_assignment.plc_course_unit.plc_learning_modules.find_by(module_type: Plc::LearningModule::PRACTICE_MODULE)
-    ]
+  request(
+    url: '/api/test/assign_script_as_student',
+    method: 'POST',
+    body: {script_name: script_name},
+    json: true
   )
 end
 
+Then(/^I fake completion of the assessment$/) do
+  request(url: '/api/test/fake_completion_assessment', method: 'POST', code: 204)
+end
+
 def generate_user(name)
-  email = "user#{Time.now.to_i}_#{rand(1000)}@testing.xx"
+  email = "user#{Time.now.to_i}_#{rand(1_000_000)}@test.xx"
   password = name + "password" # hack
   @users ||= {}
   @users[name] = {
@@ -1051,7 +1062,11 @@ def generate_teacher_student(name, teacher_authorized, student_u13 = false)
   }
 
   # enroll in a plc course as a way of becoming an authorized teacher
-  enroll_in_plc_course(@users["Teacher_#{name}"][:email]) if teacher_authorized
+  if teacher_authorized
+    individual_steps %Q{
+      And I am enrolled in a plc course
+    }
+  end
 
   create_section_and_join_as_student(name, email, password, student_u13)
 end
@@ -1064,7 +1079,11 @@ def generate_two_teachers_per_student(name, teacher_authorized)
   }
 
   # enroll in a plc course as a way of becoming an authorized teacher
-  enroll_in_plc_course(@users["First_Teacher"][:email]) if teacher_authorized
+  if teacher_authorized
+    individual_steps %Q{
+      And I am enrolled in a plc course
+    }
+  end
 
   create_section_and_join_as_student(name, email, password)
 
@@ -1073,7 +1092,11 @@ def generate_two_teachers_per_student(name, teacher_authorized)
   }
 
   # enroll in a plc course as a way of becoming an authorized teacher
-  enroll_in_plc_course(@users["Second_Teacher"][:email]) if teacher_authorized
+  if teacher_authorized
+    individual_steps %Q{
+      And I am enrolled in a plc course
+    }
+  end
 
   individual_steps %Q{
     Then I am on "http://studio.code.org/home"
@@ -1161,79 +1184,115 @@ And(/^I create an authorized teacher-associated student named "([^"]*)"$/) do |n
   generate_teacher_student(name, true)
 end
 
-And(/^I create a student named "([^"]*)"$/) do |name|
-  email, password = generate_user(name)
+def sign_up(name)
+  wait_proc = proc do
+    opacity = @browser.execute_script <<JS
+field = document.querySelector('#email-block > .error_in_field');
+return field ? parseInt(window.getComputedStyle(field).opacity) : 0;
+JS
+    expect(opacity).to eq(0)
+  end
+  page_load(wait_proc: wait_proc) do
+    steps %Q{
+      And I click selector "#signup-button"
+    }
+  end
+rescue RSpec::Expectations::ExpectationNotMetError
+  tries ||= 0
+  raise if (tries += 1) >= 5
+  sleep 1
 
+  email, _ = generate_user(name)
   steps %Q{
-    Given I am on "http://studio.code.org/users/sign_up"
-    And I wait to see "#user_name"
-    And I select the "Student" option in dropdown "user_user_type"
-    And I type "#{name}" into "#user_name"
     And I type "#{email}" into "#user_email"
-    And I type "#{password}" into "#user_password"
-    And I type "#{password}" into "#user_password_confirmation"
-    And I select the "16" option in dropdown "user_user_age"
-    And I click selector "#user_terms_of_service_version"
-    And I click selector "#signup-button"
-    And I wait until I am on "http://studio.code.org/home"
   }
+  retry
+end
+
+# Sends an asynchronous XmlHttpRequest from the browser context.
+def request(url:, method: 'GET', headers: {}, body: nil, json: false, code: 200)
+  # headers['Content-Type'] = 'application/json' if json
+  # body = "JSON.stringify(#{body.to_json})" if json && body
+
+  headers['Content-Type'] = 'application/x-www-form-urlencoded'
+  body = "'#{body.to_param}'" if json && body
+
+  js = <<JS
+// var callback = arguments[arguments.length - 1];
+
+window.asyncCallbackFinished = undefined;
+var callback = function(result) {
+  window.asyncCallbackFinished = result;
+};
+var xhr = new XMLHttpRequest();
+xhr.open('#{method}', '#{url}', true);
+#{headers.map {|k, v| "xhr.setRequestHeader('#{k}', '#{v}');"}.join("\n")}
+var csrf = document.head.querySelector("meta[name='csrf-token']")
+if (csrf) {
+  xhr.setRequestHeader('X-Csrf-Token', csrf.content)
+}
+xhr.onreadystatechange = function() {
+  if (xhr.readyState === 4) {
+    callback(JSON.stringify({
+      status: xhr.status,
+      response: xhr.responseText
+    }));
+  }
+};
+xhr.send(#{body});
+JS
+  # json = JSON.parse(@browser.execute_async_script(js))
+
+  @browser.execute_script(js)
+  result = wait_short_until {@browser.execute_script('return window.asyncCallbackFinished;')}
+  json = JSON.parse(result)
+  status, response = json.slice('status', 'response').values
+  expect(status).to eq(code), "Error code #{status}:\n#{response}"
+  response
+end
+
+def create_user(name, type: 'student', age: 16, **user_opts)
+  navigate_to replace_hostname('http://studio.code.org/reset_session')
+  Retryable.retryable(on: RSpec::Expectations::ExpectationNotMetError, tries: 3) do
+    email, password = generate_user(name)
+    request(
+      url: '/users.json',
+      method: 'POST',
+      body: {
+        user: {
+          user_type: 'student',
+          email: email,
+          password: password,
+          password_confirmation: password,
+          name: name,
+          age: age.to_s,
+          terms_of_service_version: '1'
+        }.merge(user_opts)
+      },
+      json: true,
+      code: 201
+    )
+  end
+  navigate_to replace_hostname('http://studio.code.org/')
+end
+
+And(/^I create a student named "([^"]*)"$/) do |name|
+  create_user(name)
 end
 
 And(/^I create a student in the eu named "([^"]*)"$/) do |name|
-  email, password = generate_user(name)
-
-  steps %Q{
-    Given I am on "http://studio.code.org/users/sign_up?force_in_eu=1"
-    And I wait to see "#user_name"
-    And I select the "Student" option in dropdown "user_user_type"
-    And I type "#{name}" into "#user_name"
-    And I type "#{email}" into "#user_email"
-    And I type "#{password}" into "#user_password"
-    And I type "#{password}" into "#user_password_confirmation"
-    And I select the "16" option in dropdown "user_user_age"
-    And I click selector "#user_terms_of_service_version"
-    And I click selector "#user_data_transfer_agreement_accepted"
-    And I click selector "#signup-button"
-    And I wait until I am on "http://studio.code.org/home"
-  }
+  create_user(name,
+    data_transfer_agreement_required: '1',
+    data_transfer_agreement_accepted: '1'
+  )
 end
 
 And(/^I create a young student named "([^"]*)"$/) do |name|
-  email, password = generate_user(name)
-
-  steps %Q{
-    Given I am on "http://studio.code.org/users/sign_up"
-    And I wait to see "#user_name"
-    And I select the "Student" option in dropdown "user_user_type"
-    And I type "#{name}" into "#user_name"
-    And I type "#{email}" into "#user_email"
-    And I type "#{password}" into "#user_password"
-    And I type "#{password}" into "#user_password_confirmation"
-    And I select the "10" option in dropdown "user_user_age"
-    And I click selector "#user_terms_of_service_version"
-    And I click selector "#signup-button"
-    And I wait until I am on "http://studio.code.org/home"
-  }
+  create_user(name, age: 10)
 end
 
 And(/^I create a teacher named "([^"]*)"$/) do |name|
-  email, password = generate_user(name)
-
-  steps %Q{
-    Given I am on "http://studio.code.org/reset_session"
-    Given I am on "http://studio.code.org/users/sign_up"
-    And I wait to see "#user_name"
-    And I select the "Teacher" option in dropdown "user_user_type"
-    And I wait to see "#schooldropdown-block"
-    And I type "#{name}" into "#user_name"
-    And I type "#{email}" into "#user_email"
-    And I type "#{password}" into "#user_password"
-    And I type "#{password}" into "#user_password_confirmation"
-    And I select the "Yes" option in dropdown "user_email_preference_opt_in"
-    And I click selector "#user_terms_of_service_version"
-    And I click selector "#signup-button" to load a new page
-    And I wait until I am on "http://studio.code.org/home"
-  }
+  create_user(name, age: '21+', user_type: 'teacher', email_preference_opt_in: 'yes')
 end
 
 And(/^I submit this level$/) do
@@ -1246,10 +1305,8 @@ And(/^I submit this level$/) do
   }
 end
 
-And(/^I give user "([^"]*)" hidden script access$/) do |name|
-  require_rails_env
-  user = User.find_by_email_or_hashed_email(@users[name][:email])
-  user.permission = UserPermission::HIDDEN_SCRIPT_ACCESS
+And(/^I get hidden script access$/) do
+  request(url: '/api/test/hidden_script_access', method: 'POST')
 end
 
 And(/^I save the section url$/) do
@@ -1314,10 +1371,11 @@ And(/I type the section code into "([^"]*)"$/) do |selector|
 end
 
 When(/^I sign out$/) do
-  steps %Q{
-    And I am on "http://studio.code.org/users/sign_out"
-    And I wait until current URL contains "http://code.org/"
-  }
+  if @browser.current_url.include?('studio')
+    request(url: replace_hostname('/users/sign_out.json'), code: 204)
+  else
+    navigate_to replace_hostname('http://studio.code.org/reset_session')
+  end
 end
 
 When(/^I am not signed in/) do
@@ -1347,41 +1405,26 @@ And(/^I ctrl-([^"]*)$/) do |key|
   @browser.action.key_down(:control).send_keys(key).key_up(:control).perform
 end
 
+def convert_keys(keys)
+  return keys[1..-1].to_sym if keys.start_with?(':')
+  keys.gsub!(/([^\\])\\n/, "\\1\n") # Cucumber does not convert captured \n to newline.
+  keys.gsub!(/\\\\n/, "\\n") # Fix up escaped newline
+  # Convert newlines to :enter keys.
+  keys.chars.map {|k| k == "\n" ? :enter : k}
+end
+
 def press_keys(element, key)
-  if key.start_with?(':')
-    element.send_keys(make_symbol_if_colon(key))
-  else
-    # Workaround for Firefox, see https://code.google.com/p/selenium/issues/detail?id=6822
-    key.gsub!(/([^\\])\\n/, "\\1\n") # Cucumber does not convert captured \n to newline.
-    key.gsub!(/\\\\n/, "\\n") # Fix up escaped newline
-    key.split('').each do |k|
-      if k == '('
-        element.send_keys :shift, 9
-      elsif k == ')'
-        element.send_keys :shift, 0
-      else
-        element.send_keys k
-      end
-    end
-  end
+  element.send_keys(*convert_keys(key))
 end
 
 # Known issue: IE does not register the key presses in this step.
 # Add @no_ie tag to your scenario to skip IE when using this step.
-And(/^I press keys "([^"]*)" for element "([^"]*)"$/) do |key, selector|
-  element = @browser.find_element(:css, selector)
-  press_keys(element, key)
-end
-
-def make_symbol_if_colon(key)
-  # Available symbol keys:
-  # https://code.google.com/p/selenium/source/browse/rb/lib/selenium/webdriver/common/keys.rb?name=selenium-2.26.0
-  key.start_with?(':') ? key[1..-1].to_sym : key
+And(/^I press keys "([^"]*)" for element "([^"]*)"$/) do |keys, selector|
+  press_keys(@browser.find_element(:css, selector), keys)
 end
 
 When /^I press keys "([^"]*)"$/ do |keys|
-  # Note: Safari webdriver does not support actions API
-  @browser.action.send_keys(make_symbol_if_colon(keys)).perform
+  @browser.action.send_keys(*convert_keys(keys)).perform
 end
 
 # Press backspace repeatedly to clear an element.  Handy for React.
@@ -1400,6 +1443,10 @@ end
 
 When /^I press double-quote key$/ do
   @browser.action.send_keys('"').perform
+end
+
+When /^I press double-quote key for element "([^"]*)"$/ do |selector|
+  press_keys(@browser.find_element(:css, selector), '"')
 end
 
 When /^I disable onBeforeUnload$/ do
@@ -1452,6 +1499,7 @@ end
 When /^I navigate to the shared version of my project$/ do
   steps <<-STEPS
     When I open the share dialog
+    And I wait for 3 seconds
     And I navigate to the share URL
   STEPS
 end
@@ -1591,6 +1639,15 @@ Then /^I wait for initial project save to complete$/ do
   end
 end
 
+Then /^I save the timestamp from "([^"]*)"$/ do |css|
+  @timestamp = @browser.find_element(css: css)['timestamp']
+end
+
+Then /^"([^"]*)" contains the saved timestamp$/ do |css|
+  timestamp = @browser.find_element(css: css)['timestamp']
+  expect(@timestamp).to eq(timestamp)
+end
+
 When /^I switch to text mode$/ do
   steps <<-STEPS
     When I press "show-code-header"
@@ -1686,7 +1743,7 @@ Then /^I hide unit "([^"]+)"$/ do |unit_name|
   selector = ".uitest-CourseScript:contains(#{unit_name}) .fa-eye-slash"
   @browser.execute_script("$(#{selector.inspect}).click();")
   wait_short_until do
-    @browser.execute_script("return window.__TestInterface.toggleHiddenUnitComplete;")
+    @browser.execute_script("return window.__TestInterface && window.__TestInterface.toggleHiddenUnitComplete;")
   end
 end
 
@@ -1753,6 +1810,6 @@ Then /^I open the Manage Assets dialog$/ do
 end
 
 Then /^page text does (not )?contain "([^"]*)"$/ do |negation, text|
-  body_text = @browser.execute_script('return document.body.textContent;')
+  body_text = @browser.execute_script('return document.body && document.body.textContent;').to_s
   expect(body_text.include?(text)).to eq(negation.nil?)
 end

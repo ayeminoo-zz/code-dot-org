@@ -108,6 +108,7 @@ Scenario: Remix project creates and redirects to new channel
   And I get redirected to "/projects/gamelab/([^\/]*?)/edit" via "dashboard"
   And I rotate to landscape
   And I wait for the page to fully load
+  And I wait for 2 seconds
   Then evaluate JavaScript expression "localStorage.setItem('is13Plus', 'true'), true"
   And element "#runButton" is visible
   And element ".project_updated_at" eventually contains text "Saved"
@@ -117,6 +118,7 @@ Scenario: Remix project creates and redirects to new channel
   And I wait until element ".project_edit" is visible
   Then I should see title "Code Ninja - Game Lab"
   And I save the URL
+  And I wait for 2 seconds
 
   Then I click selector ".project_remix" to load a new page
   And I wait for the page to fully load

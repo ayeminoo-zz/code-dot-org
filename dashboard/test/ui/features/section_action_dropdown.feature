@@ -1,10 +1,10 @@
+@single_session
 Feature: Using the SectionActionDropdown
 
   @no_ie
   # * Check that we get redirected to the right page
   Scenario: Viewing progress from SectionActionDropdown
     Given I create a teacher-associated student named "Sally"
-    And I give user "Teacher_Sally" hidden script access
     And I complete the level on "http://studio.code.org/s/allthethings/stage/2/puzzle/1"
     And I complete the free response on "http://studio.code.org/s/allthethings/stage/27/puzzle/1"
     And I submit the assessment on "http://studio.code.org/s/allthethings/stage/33/puzzle/1"

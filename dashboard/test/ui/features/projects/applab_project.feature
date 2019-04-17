@@ -115,6 +115,8 @@ Scenario: Save Project After Signing Out
   Then ace editor code is equal to "// comment 1"
 
 @no_mobile
+# 'I am assigned to script'
+@dashboard_db_access
 Scenario: Save Script Level After Signing Out
   Given I create a student named "Sally Student"
   Given I am assigned to script "csp3-2017"
@@ -147,6 +149,7 @@ Scenario: Remix project creates and redirects to new channel
   And I get redirected to "/projects/applab/([^\/]*?)/edit" via "dashboard"
   And I rotate to landscape
   And I wait for the page to fully load
+  And I wait for 2 seconds
   Then evaluate JavaScript expression "localStorage.setItem('is13Plus', 'true'), true"
   And element "#runButton" is visible
   And element ".project_updated_at" eventually contains text "Saved"
@@ -156,6 +159,7 @@ Scenario: Remix project creates and redirects to new channel
   And I wait until element ".project_edit" is visible
   Then I should see title "Code Ninja - App Lab"
   And I save the URL
+  And I wait for 2 seconds
 
   Then I click selector ".project_remix" to load a new page
   And I wait for the page to fully load

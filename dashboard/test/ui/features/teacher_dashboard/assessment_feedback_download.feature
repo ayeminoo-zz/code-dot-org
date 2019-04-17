@@ -1,10 +1,8 @@
 @no_mobile
-@dashboard_db_access
 Feature: Using the assessments tab in the teacher dashboard to get feedback for script
 
   Background:
     Given I create an authorized teacher-associated student named "Sally"
-    And I give user "Teacher_Sally" hidden script access
     And I sign out
 
   Scenario: Assessments tab has feedback download
@@ -58,4 +56,3 @@ Feature: Using the assessments tab in the teacher dashboard to get feedback for 
     And I wait until element "#uitest-teacher-dashboard-nav a:contains(Assessments/Surveys)" is visible
     And I click selector "#uitest-teacher-dashboard-nav a:contains(Assessments/Surveys)" once I see it
     Then I wait until element "div:contains(It looks like there are no multi-question assessments or surveys in this course)" is visible
-
